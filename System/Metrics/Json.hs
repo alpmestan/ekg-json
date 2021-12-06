@@ -7,7 +7,9 @@
 module System.Metrics.Json
     ( -- * Converting metrics to JSON values
       sampleToJson
+    , sampleFromJson
     , valueToJson
+    , valueFromJson
 
       -- ** Newtype wrappers with instances
     , Sample(..)
@@ -21,6 +23,7 @@ import Data.Int (Int64)
 import qualified Data.Text as T
 import qualified System.Metrics as Metrics
 import qualified System.Metrics.Distribution as Distribution
+import qualified System.Metrics.Distribution.Internal as Distribution
 
 ------------------------------------------------------------------------
 -- * Converting metrics to JSON values
@@ -61,6 +64,20 @@ sampleToJson metrics =
         Just m' -> A.Object $ M.insert str (go m' rest val) m
     go v _ _                        = typeMismatch "Object" v
 
+sampleFromJson :: A.Value -> A.Parser Metrics.Sample
+sampleFromJson v = M.fromList <$> go [] v
+  where go :: [T.Text] -> A.Value -> A.Parser [(T.Text, Metrics.Value)]
+        go prefix (A.Object o) = do
+          mtype <- o A..:? "type"
+          mval  <- o A..:? "val"
+          case (,) <$> mtype <*> mval of
+            Just (ty, val) -> do
+              metricsVal <- valueFromJson ty val
+              return [(T.intercalate "." prefix, metricsVal)]
+            Nothing        -> concat
+                          <$> traverse (\(k, v) -> go (prefix++[k]) v) (M.toList o)
+        go _      _            = fail "shouldn't happen"
+
 typeMismatch :: String   -- ^ The expected type
              -> A.Value  -- ^ The actual value encountered
              -> a
@@ -88,6 +105,14 @@ valueToJson (Metrics.Counter n)      = scalarToJson n CounterType
 valueToJson (Metrics.Gauge n)        = scalarToJson n GaugeType
 valueToJson (Metrics.Label l)        = scalarToJson l LabelType
 valueToJson (Metrics.Distribution l) = distrubtionToJson l
+
+valueFromJson :: A.Value -> T.Text -> A.Parser Metrics.Value
+valueFromJson v ty = case ty of
+  "c" -> Metrics.Counter <$> A.parseJSON v
+  "g" -> Metrics.Gauge   <$> A.parseJSON v
+  "l" -> Metrics.Label   <$> A.parseJSON v
+  "d" -> Metrics.Distribution <$> distributionFromJSON v
+  _   -> fail "Unknown metric type"
 
 -- | Convert a scalar metric (i.e. counter, gauge, or label) to a JSON
 -- value.
@@ -121,6 +146,13 @@ distrubtionToJson stats = A.object
     , "type" .= metricType DistributionType
     ]
 
+distributionFromJson :: A.Value -> A.Parser Distribution.Stats
+distributionFromJson (A.Object o) =
+  Distribution.Stats <$> o A..: "mean"  <*> o A..: "variance"
+                     <*> o A..: "count" <*> o A..: "sum"
+                     <*> o A..: "min"   <*> o A..: "max"
+distributionFromJSON _ = fail "Distribution needs to be an object"
+
 ------------------------------------------------------------------------
 -- ** Newtype wrappers with instances
 
@@ -133,6 +165,9 @@ newtype Sample = Sample Metrics.Sample
 instance A.ToJSON Sample where
     toJSON (Sample s) = sampleToJson s
 
+instance A.FromJSON Sample where
+    parseJSON v = Sample <$> sampleFromJson v
+
 -- | Newtype wrapper that provides a 'A.ToJSON' instances for the
 -- underlying 'Metrics.Value' without creating an orphan instance.
 newtype Value = Value Metrics.Value
@@ -141,3 +176,9 @@ newtype Value = Value Metrics.Value
 -- | Uses 'valueToJson'.
 instance A.ToJSON Value where
     toJSON (Value v) = valueToJson v
+
+instance A.FromJSON Value where
+    parseJSON (A.Object o) = do
+      ty <- o A..: "type"
+      v  <- o A..: "val"
+      Value <$> valueFromJson ty v
