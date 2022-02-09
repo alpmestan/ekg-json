@@ -106,8 +106,8 @@ valueToJson (Metrics.Gauge n)        = scalarToJson n GaugeType
 valueToJson (Metrics.Label l)        = scalarToJson l LabelType
 valueToJson (Metrics.Distribution l) = distrubtionToJson l
 
-valueFromJson :: A.Value -> T.Text -> A.Parser Metrics.Value
-valueFromJson v ty = case ty of
+valueFromJson :: T.Text -> A.Value -> A.Parser Metrics.Value
+valueFromJson ty v = case ty of
   "c" -> Metrics.Counter <$> A.parseJSON v
   "g" -> Metrics.Gauge   <$> A.parseJSON v
   "l" -> Metrics.Label   <$> A.parseJSON v
